@@ -3,20 +3,21 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Dog Feeder</title>
+  <title>Potomac Dog Meal Tracker</title>
   <style>
-    body { font-family: -apple-system, system-ui, sans-serif; max-width: 420px; margin: 2rem auto; padding: 0 1rem; }
+    body { font-family: -apple-system, system-ui, sans-serif; max-width: 420px; margin: 2rem auto; padding: 0 1rem; background: #121212; color: #e0e0e0; color-scheme: dark; }
     h1 { font-size: 1.5rem; }
+    #date { display: block; font-size: 1rem; font-weight: normal; color: #aaa; }
     label.meal { display: flex; align-items: center; gap: .75rem; font-size: 1.4rem; padding: .75rem 0; }
     label.meal input { width: 1.6rem; height: 1.6rem; }
-    #status { color: #666; min-height: 1.2em; }
-    #status.error { color: #b00020; }
-    #setup { margin-top: 2rem; padding-top: 1rem; border-top: 1px solid #ddd; }
+    #status { color: #aaa; min-height: 1.2em; }
+    #status.error { color: #ff6b81; }
+    #setup { margin-top: 2rem; padding-top: 1rem; border-top: 1px solid #444; }
     #setup input { width: 100%; box-sizing: border-box; padding: .4rem; }
   </style>
 </head>
 <body>
-  <h1>Dog Feeder <small id="date"></small></h1>
+  <h1>Potomac Dog Meal Tracker<small id="date"></small></h1>
 
   <label class="meal"><input type="checkbox" data-meal="breakfast" disabled> Breakfast</label>
   <label class="meal"><input type="checkbox" data-meal="lunch" disabled> Lunch</label>
