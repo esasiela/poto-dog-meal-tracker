@@ -1,0 +1,214 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Dog Feeder</title>
+  <style>
+    body { font-family: -apple-system, system-ui, sans-serif; max-width: 420px; margin: 2rem auto; padding: 0 1rem; }
+    h1 { font-size: 1.5rem; }
+    label.meal { display: flex; align-items: center; gap: .75rem; font-size: 1.4rem; padding: .75rem 0; }
+    label.meal input { width: 1.6rem; height: 1.6rem; }
+    #status { color: #666; min-height: 1.2em; }
+    #status.error { color: #b00020; }
+    #setup { margin-top: 2rem; padding-top: 1rem; border-top: 1px solid #ddd; }
+    #setup input { width: 100%; box-sizing: border-box; padding: .4rem; }
+  </style>
+</head>
+<body>
+  <h1>Dog Feeder <small id="date"></small></h1>
+
+  <label class="meal"><input type="checkbox" data-meal="breakfast" disabled> Breakfast</label>
+  <label class="meal"><input type="checkbox" data-meal="lunch" disabled> Lunch</label>
+  <label class="meal"><input type="checkbox" data-meal="dinner" disabled> Dinner</label>
+
+  <p id="status"></p>
+  <button id="refresh">Refresh</button>
+
+  <details id="setup">
+    <summary>Setup</summary>
+    <p>Apps Script web app URL (ends in /exec):</p>
+    <input id="urlInput" type="url" placeholder="https://script.google.com/macros/s/.../exec">
+    <p><button id="saveUrl">Save</button></p>
+  </details>
+
+  <script>
+    // ---- Settings ----------------------------------------------------------
+    const STORAGE_KEY   = 'dogfeeder.scriptUrl';
+    const MIN_GAP_MS    = 5 * 1000;    // ignore automatic refreshes this soon after the last one
+    const POLL_MS       = 60 * 1000;   // background refresh while the page is visible
+    const AGE_TICK_MS   = 15 * 1000;   // how often "updated N min ago" text is redrawn
+
+    // ---- Elements ----------------------------------------------------------
+    const boxes    = document.querySelectorAll('input[data-meal]');
+    const statusEl = document.getElementById('status');
+    const urlInput = document.getElementById('urlInput');
+    const setupEl  = document.getElementById('setup');
+
+    // ---- State -------------------------------------------------------------
+    let loading      = false;  // a GET is in flight
+    let saving       = false;  // a POST is in flight
+    let saveSeq      = 0;      // bumps on every save, so stale GETs can be discarded
+    let lastAttempt  = 0;      // when the last GET started (for the minimum gap)
+    let lastUpdated  = 0;      // when we last got good data from the server
+    let errorMsg     = null;   // last error, cleared on success
+    let pollTimer    = null;
+
+    // Optional: pick up the URL from a link like index.html#setup=https://script.google.com/...
+    const hashMatch = location.hash.match(/setup=(.+)$/);
+    if (hashMatch) localStorage.setItem(STORAGE_KEY, decodeURIComponent(hashMatch[1]));
+
+    function scriptUrl() {
+      return localStorage.getItem(STORAGE_KEY);
+    }
+
+    // ---- Display -----------------------------------------------------------
+    function ago(ms) {
+      const sec = Math.round((Date.now() - ms) / 1000);
+      if (sec < 45) return 'just now';
+      const min = Math.round(sec / 60);
+      if (min < 60) return min + ' min ago';
+      const hr = Math.floor(min / 60);
+      if (hr < 24) return hr + ' h ago';
+      return 'on ' + new Date(ms).toLocaleString();
+    }
+
+    function renderStatus() {
+      let text;
+      if (!scriptUrl()) {
+        text = 'No script URL yet — open Setup below.';
+      } else if (saving) {
+        text = 'Saving…';
+      } else if (errorMsg) {
+        text = errorMsg + (lastUpdated ? ' — last updated ' + ago(lastUpdated) : '');
+      } else if (lastUpdated) {
+        text = 'Updated ' + ago(lastUpdated) + (loading ? ' · refreshing…' : '');
+      } else {
+        text = loading ? 'Loading…' : '';
+      }
+      statusEl.textContent = text;
+      statusEl.classList.toggle('error', !!errorMsg && !saving);
+    }
+
+    function render(state) {
+      document.getElementById('date').textContent = state.date;
+      boxes.forEach(box => {
+        box.checked = state[box.dataset.meal] === true;
+        box.disabled = false;
+      });
+    }
+
+    // Turn a fetch Response into state, with a readable error if the script failed.
+    async function readState(res) {
+      if (!res.ok) throw new Error('server returned ' + res.status);
+      let state;
+      try {
+        state = await res.json();
+      } catch {
+        throw new Error('unexpected response (check Executions in Apps Script)');
+      }
+      if (state.error) throw new Error(state.error);
+      return state;
+    }
+
+    // ---- Read --------------------------------------------------------------
+    // force = true for page start, manual Refresh, and Setup save; skips the minimum gap.
+    async function load(force = false) {
+      if (!scriptUrl()) {
+        setupEl.open = true;
+        renderStatus();
+        return;
+      }
+      if (loading || saving) return;
+      if (!force && Date.now() - lastAttempt < MIN_GAP_MS) return;
+
+      loading = true;
+      lastAttempt = Date.now();
+      const seqAtStart = saveSeq;
+      renderStatus();
+
+      try {
+        const state = await readState(await fetch(scriptUrl()));
+        // If a save started or finished while this GET was out, its answer is newer than ours.
+        if (saveSeq === seqAtStart) {
+          render(state);
+          lastUpdated = Date.now();
+          errorMsg = null;
+        }
+      } catch (err) {
+        errorMsg = navigator.onLine ? 'Could not load: ' + err.message : 'Offline';
+      } finally {
+        loading = false;
+        renderStatus();
+      }
+    }
+
+    // ---- Write -------------------------------------------------------------
+    async function save(box) {
+      const meal = box.dataset.meal;
+      const fed = box.checked;
+      saving = true;
+      saveSeq++;
+      boxes.forEach(b => b.disabled = true);
+      renderStatus();
+
+      try {
+        // Body is a plain string, so the browser sends it as text/plain.
+        // That avoids the CORS "preflight" check, which Apps Script can't answer.
+        const res = await fetch(scriptUrl(), {
+          method: 'POST',
+          body: JSON.stringify({ meal, fed })
+        });
+        const state = await readState(res);
+        render(state);
+        lastUpdated = Date.now();
+        errorMsg = null;
+      } catch (err) {
+        box.checked = !fed; // put the box back the way it was
+        boxes.forEach(b => b.disabled = false);
+        errorMsg = navigator.onLine ? 'Could not save: ' + err.message : 'Offline — not saved';
+      } finally {
+        saving = false;
+        renderStatus();
+      }
+    }
+
+    // ---- Polling (only while visible) --------------------------------------
+    function startPolling() {
+      if (!pollTimer) pollTimer = setInterval(() => load(), POLL_MS);
+    }
+
+    function stopPolling() {
+      clearInterval(pollTimer);
+      pollTimer = null;
+    }
+
+    // ---- Wiring ------------------------------------------------------------
+    document.addEventListener('visibilitychange', () => {
+      if (document.visibilityState === 'visible') {
+        load();
+        startPolling();
+      } else {
+        stopPolling();
+      }
+    });
+    window.addEventListener('focus', () => load());    // desktop: switching back to the window
+    window.addEventListener('online', () => load());   // network came back
+    window.addEventListener('pageshow', e => { if (e.persisted) load(); }); // restored from cache
+
+    boxes.forEach(box => box.addEventListener('change', () => save(box)));
+    document.getElementById('refresh').addEventListener('click', () => load(true));
+    document.getElementById('saveUrl').addEventListener('click', () => {
+      localStorage.setItem(STORAGE_KEY, urlInput.value.trim());
+      setupEl.open = false;
+      load(true);
+    });
+
+    setInterval(renderStatus, AGE_TICK_MS);  // keeps "N min ago" current; no network
+
+    urlInput.value = scriptUrl() || '';
+    load(true);
+    if (document.visibilityState === 'visible') startPolling();
+  </script>
+</body>
+</html>
